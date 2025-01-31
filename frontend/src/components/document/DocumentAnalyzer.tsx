@@ -7,42 +7,71 @@ import {
   Button,
   CircularProgress,
   Alert,
-  List,
-  ListItem,
-  ListItemText,
-  Divider,
 } from '@mui/material';
 import { motion } from 'framer-motion';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import DescriptionIcon from '@mui/icons-material/Description';
-import { useAuth } from '../../context/AuthContext';
+import ImageIcon from '@mui/icons-material/Image';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-interface AnalysisResult {
-  summary: string;
-  keyPoints: string[];
-  legalImplications: string[];
-  recommendations: string[];
-}
+const API_KEY = 'AIzaSyB99T6jpCq62Jp2CrvoU8m_GFujDqNOdpc';
+const genAI = new GoogleGenerativeAI(API_KEY);
 
 const DocumentAnalyzer = () => {
-  const { isAuthenticated } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [analysis, setAnalysis] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (selectedFile) {
-      if (selectedFile.type === 'application/pdf' || 
-          selectedFile.type === 'application/msword' || 
-          selectedFile.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      // Check if file is an image
+      if (selectedFile.type.startsWith('image/')) {
         setFile(selectedFile);
         setError(null);
+        setAnalysis(null);
+        // Create preview URL for image
+        const previewUrl = URL.createObjectURL(selectedFile);
+        setPreview(previewUrl);
+      } else if (selectedFile.type === 'text/plain' || 
+                selectedFile.type === 'application/pdf' || 
+                selectedFile.type === 'application/msword' || 
+                selectedFile.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        setFile(selectedFile);
+        setError(null);
+        setAnalysis(null);
+        setPreview(null);
       } else {
-        setError('Please upload a PDF or Word document');
+        setError('Please upload an image or document file');
         setFile(null);
+        setPreview(null);
       }
+    }
+  };
+
+  const fileToGenerativeInput = async (file: File) => {
+    if (file.type.startsWith('image/')) {
+      // Handle image file
+      const model = genAI.getGenerativeModel({ model: "gemini-pro-vision" });
+      const buffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(buffer);
+      return {
+        inlineData: {
+          data: Buffer.from(uint8Array).toString('base64'),
+          mimeType: file.type
+        }
+      };
+    } else {
+      // Handle text file
+      const text = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target?.result as string);
+        reader.onerror = (e) => reject(e);
+        reader.readAsText(file);
+      });
+      return text;
     }
   };
 
@@ -53,30 +82,35 @@ const DocumentAnalyzer = () => {
     setError(null);
 
     try {
-      // Simulate API call for document analysis
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      const fileData = await fileToGenerativeInput(file);
+      
+      // Choose model based on file type
+      const model = file.type.startsWith('image/') 
+        ? genAI.getGenerativeModel({ model: "gemini-pro-vision" })
+        : genAI.getGenerativeModel({ model: "gemini-pro" });
 
-      // Mock analysis result
-      setAnalysis({
-        summary: 'This legal document appears to be a contract agreement between two parties...',
-        keyPoints: [
-          'Document type: Contract Agreement',
-          'Parties involved: Party A and Party B',
-          'Duration: 12 months',
-          'Key terms and conditions identified',
-        ],
-        legalImplications: [
-          'Binding agreement under Section 10 of Contract Act',
-          'Requires notarization',
-          'Subject to local jurisdiction',
-        ],
-        recommendations: [
-          'Review termination clauses',
-          'Consider adding force majeure clause',
-          'Clarify dispute resolution process',
-        ],
-      });
+      const prompt = file.type.startsWith('image/') 
+        ? "Please analyze this legal document image and provide a comprehensive summary including:\n" +
+          "1. Brief overview of what this document appears to be\n" +
+          "2. Key points and important information visible\n" +
+          "3. Any legal implications or important details\n" +
+          "4. Recommendations or potential concerns"
+        : "Please analyze this legal document and provide a comprehensive summary including:\n" +
+          "1. Brief overview\n" +
+          "2. Key points and important clauses\n" +
+          "3. Legal implications\n" +
+          "4. Recommendations or potential concerns";
+
+      // Generate content based on file type
+      const result = file.type.startsWith('image/') 
+        ? await model.generateContent([prompt, fileData])
+        : await model.generateContent([prompt + "\n\nDocument content:\n" + fileData]);
+
+      const response = await result.response;
+      setAnalysis(response.text());
+
     } catch (err) {
+      console.error('Analysis error:', err);
       setError('Failed to analyze document. Please try again.');
     } finally {
       setLoading(false);
@@ -121,7 +155,7 @@ const DocumentAnalyzer = () => {
             }}
           >
             <input
-              accept=".pdf,.doc,.docx"
+              accept="image/*,.pdf,.doc,.docx,.txt"
               style={{ display: 'none' }}
               id="document-upload"
               type="file"
@@ -131,7 +165,7 @@ const DocumentAnalyzer = () => {
               <Button
                 component="span"
                 variant="outlined"
-                startIcon={<UploadFileIcon />}
+                startIcon={file?.type.startsWith('image/') ? <ImageIcon /> : <UploadFileIcon />}
                 sx={{
                   py: 2,
                   px: 4,
@@ -141,16 +175,32 @@ const DocumentAnalyzer = () => {
                   },
                 }}
               >
-                Upload Document
+                Upload Document or Image
               </Button>
             </label>
 
             {file && (
-              <Box sx={{ textAlign: 'center' }}>
-                <Typography variant="body1" sx={{ mb: 1 }}>
-                  <DescriptionIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-                  {file.name}
-                </Typography>
+              <Box sx={{ textAlign: 'center', width: '100%' }}>
+                {preview ? (
+                  <Box sx={{ mb: 2, maxWidth: '100%', overflow: 'hidden' }}>
+                    <img 
+                      src={preview} 
+                      alt="Document preview" 
+                      style={{ 
+                        maxWidth: '100%', 
+                        maxHeight: '300px', 
+                        objectFit: 'contain',
+                        borderRadius: '8px',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                      }} 
+                    />
+                  </Box>
+                ) : (
+                  <Typography variant="body1" sx={{ mb: 1 }}>
+                    <DescriptionIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                    {file.name}
+                  </Typography>
+                )}
                 <Button
                   variant="contained"
                   onClick={analyzeDocument}
@@ -174,47 +224,19 @@ const DocumentAnalyzer = () => {
                 <Typography variant="h6" gutterBottom>
                   Analysis Results
                 </Typography>
-                
-                <Typography variant="body1" paragraph>
-                  {analysis.summary}
-                </Typography>
-
-                <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
-                  Key Points
-                </Typography>
-                <List>
-                  {analysis.keyPoints.map((point, index) => (
-                    <ListItem key={index}>
-                      <ListItemText primary={point} />
-                    </ListItem>
-                  ))}
-                </List>
-
-                <Divider sx={{ my: 2 }} />
-
-                <Typography variant="h6" gutterBottom>
-                  Legal Implications
-                </Typography>
-                <List>
-                  {analysis.legalImplications.map((implication, index) => (
-                    <ListItem key={index}>
-                      <ListItemText primary={implication} />
-                    </ListItem>
-                  ))}
-                </List>
-
-                <Divider sx={{ my: 2 }} />
-
-                <Typography variant="h6" gutterBottom>
-                  Recommendations
-                </Typography>
-                <List>
-                  {analysis.recommendations.map((recommendation, index) => (
-                    <ListItem key={index}>
-                      <ListItemText primary={recommendation} />
-                    </ListItem>
-                  ))}
-                </List>
+                <Paper elevation={1} sx={{ p: 3, bgcolor: '#f8fafc' }}>
+                  <Typography
+                    variant="body1"
+                    component="pre"
+                    sx={{
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {analysis}
+                  </Typography>
+                </Paper>
               </Box>
             )}
           </Box>
